@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# Fetch candidate DNS servers
+curl -s https://public-dns.info/nameservers.csv -o _d
+_d1=$(awk -F',' 'NR>1 && $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $1}' _d | head -n 50)
+
+echo -e "\033[1;35mDNS SPEED TEST — Made by @hamid2rap\033[0m"
+declare -A _d2
+
+# Live feedback during scan
+for _d3 in $_d1; do
+  echo -e "\033[0;33mTesting $_d3 ...\033[0m"
+  _d4=$(ping -c1 -W1 -q "$_d3" | awk -F '/' '/rtt/ {print $5}')
+  if [[ $_d4 ]]; then
+    _d2[$_d3]=$_d4
+    echo -e "  \033[0;32m$_d3 responded in $_d4 ms\033[0m"
+  else
+    echo -e "  \033[0;31m$_d3 no response\033[0m"
+  fi
+done
+
+# Bold, high-contrast banner: hamid scanner
+echo
+echo -e "\033[1;97;45m████████████████████████████████████████████████████████\033[0m"
+echo -e "\033[1;97;45m                    hamid scanner                       \033[0m"
+echo -e "\033[1;97;45m████████████████████████████████████████████████████████\033[0m"
+echo
+
+# Top 3 fastest DNS servers
+echo -e "\033[1;35mTop 3 fastest DNS servers:\033[0m"
+for _d5 in "${!_d2[@]}"; do
+  echo "$_d5 ${_d2[$_d5]}"
+done | sort -k2 -n | head -n 3 | while read _d6 _d7; do
+  printf "\033[0;32m%-18s → %6s ms\033[0m   \033[1;35mMade by @hamid2rap\033[0m\n" "$_d6" "$_d7"
+done
