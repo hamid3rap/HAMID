@@ -1,35 +1,134 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Fetch candidate DNS servers
-curl -s https://public-dns.info/nameservers.csv -o _d
-_d1=$(awk -F',' 'NR>1 && $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $1}' _d | head -n 50)
+GREEN="\e[32m"
+YELLOW="\e[33m"
+CYAN="\e[36m"
+MAGENTA="\e[35m"
+RESET="\e[0m"
 
-echo -e "\033[1;35mDNS SPEED TEST — Made by @hamid2rap\033[0m"
-declare -A _d2
+# ----------------------------------------------------------
+# Option 1 — Numeric DNS Scanner
+# ----------------------------------------------------------
+scan_numeric_dns() {
+    echo -e "${MAGENTA}Fetching DNS IPv4 list...${RESET}"
+    curl -s https://public-dns.info/nameservers.csv -o _dnslist
 
-# Live feedback during scan
-for _d3 in $_d1; do
-  echo -e "\033[0;33mTesting $_d3 ...\033[0m"
-  _d4=$(ping -c1 -W1 -q "$_d3" | awk -F '/' '/rtt/ {print $5}')
-  if [[ $_d4 ]]; then
-    _d2[$_d3]=$_d4
-    echo -e "  \033[0;32m$_d3 responded in $_d4 ms\033[0m"
-  else
-    echo -e "  \033[0;31m$_d3 no response\033[0m"
-  fi
-done
+    DNS_LIST=$(awk -F',' 'NR>1 && $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $1}' _dnslist | head -n 50)
 
-# Bold, high-contrast banner: hamid scanner
-echo
-echo -e "\033[1;97;45m████████████████████████████████████████████████████████\033[0m"
-echo -e "\033[1;97;45m                    hamid scanner                       \033[0m"
-echo -e "\033[1;97;45m████████████████████████████████████████████████████████\033[0m"
-echo
+    declare -A RESULT
 
-# Top 3 fastest DNS servers
-echo -e "\033[1;35mTop 3 fastest DNS servers:\033[0m"
-for _d5 in "${!_d2[@]}"; do
-  echo "$_d5 ${_d2[$_d5]}"
-done | sort -k2 -n | head -n 3 | while read _d6 _d7; do
-  printf "\033[0;32m%-18s → %6s ms\033[0m   \033[1;35mMade by @hamid2rap\033[0m\n" "$_d6" "$_d7"
+    echo -e "${CYAN}Testing 50 DNS servers...${RESET}"
+    for ip in $DNS_LIST; do
+        echo -ne "Testing $ip ...\r"
+        PING=$(ping -c1 -W1 -q "$ip" | awk -F '/' '/rtt/ {print $5}')
+        if [[ $PING ]]; then
+            RESULT[$ip]=$PING
+        fi
+    done
+
+    echo
+    echo -e "${MAGENTA}Top 3 Fastest DNS:${RESET}"
+    for ip in "${!RESULT[@]}"; do
+        echo "$ip ${RESULT[$ip]}"
+    done | sort -k2 -n | head -n 3 | while read ip lat; do
+        echo -e "${GREEN}$ip → $lat ms${RESET}"
+    done
+
+    rm -f _dnslist
+}
+
+# ----------------------------------------------------------
+# Option 2 — DoH Scanner (Ultra Fast)
+# ----------------------------------------------------------
+scan_doh_dns() {
+    LIST_URL="https://raw.githubusercontent.com/10ium/Public-DNS-Collector/main/lists/doh.txt"
+    TEST_DOMAIN="example.com"
+    TIMEOUT=1
+    PARALLEL=40
+
+    echo -e "${MAGENTA}Downloading DoH list...${RESET}"
+    LIST=$(curl -fsS "$LIST_URL") || { echo "Error downloading list"; return; }
+
+    LIST=$(echo "$LIST" | grep -v '^$')
+    TOTAL=$(echo "$LIST" | wc -l)
+    echo "Total: $TOTAL servers"
+
+    TMP=$(mktemp)
+    current=0
+
+    test_one() {
+        base="$1"
+
+        if [[ "$base" == *"dns-query"* ]]; then
+            URL="$base?name=$TEST_DOMAIN&type=A"
+        else
+            URL="${base%/}/dns-query?name=$TEST_DOMAIN&type=A"
+        fi
+
+        RESULT=$(curl -s -H "accept: application/dns-json" --max-time $TIMEOUT -w "\n%{time_total}" "$URL")
+        EXIT=$?
+
+        [[ $EXIT -ne 0 ]] && return
+
+        TIME=$(echo "$RESULT" | tail -n1)
+        BODY=$(echo "$RESULT" | sed '$d')
+        STATUS=$(echo "$BODY" | jq -r '.Status // 1' 2>/dev/null)
+
+        [[ "$STATUS" == "0" ]] && echo "$TIME $URL" >> "$TMP"
+    }
+
+    for base in $LIST; do
+        ((current++))
+        PERCENT=$(( current * 100 / TOTAL ))
+        echo -ne "Progress: $PERCENT%   \r"
+
+        test_one "$base" &
+
+        while (( $(jobs -r | wc -l) >= PARALLEL )); do
+            sleep 0.05
+        done
+    done
+
+    wait
+    echo -e "\nDone.\n"
+
+    BEST=$(sort -n "$TMP" | head -n1)
+    rm -f "$TMP"
+
+    if [[ -n "$BEST" ]]; then
+        BEST_TIME=$(echo "$BEST" | awk '{print $1}')
+        BEST_URL=$(echo "$BEST" | awk '{print $2}')
+
+        echo -e "${GREEN}Best DoH:${RESET}"
+        echo -e "${GREEN}$BEST_URL${RESET}"
+        echo -e "${GREEN}Latency: $BEST_TIME sec${RESET}"
+        echo
+        echo "curl -H 'accept: application/dns-json' \"$BEST_URL\""
+    else
+        echo "No working DoH found."
+    fi
+}
+
+# ----------------------------------------------------------
+# MENU
+# ----------------------------------------------------------
+
+while true; do
+    clear
+    echo -e "${MAGENTA}======================================${RESET}"
+    echo -e "${MAGENTA}        DNS Scanner by Hamid         ${RESET}"
+    echo -e "${MAGENTA}======================================${RESET}"
+    echo
+    echo -e "${CYAN}1) Scan Numeric DNS (IPv4)${RESET}"
+    echo -e "${CYAN}2) Scan DoH DNS${RESET}"
+    echo -e "${CYAN}0) Exit${RESET}"
+    echo
+    read -p "Choose option: " opt
+
+    case $opt in
+        1) scan_numeric_dns; read -p "Press Enter...";;
+        2) scan_doh_dns; read -p "Press Enter...";;
+        0) exit ;;
+        *) echo "Invalid choice"; sleep 1 ;;
+    esac
 done
